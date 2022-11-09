@@ -1,0 +1,2377 @@
+{
+  "cells": [
+    {
+      "cell_type": "markdown",
+      "metadata": {
+        "id": "view-in-github",
+        "colab_type": "text"
+      },
+      "source": [
+        "<a href=\"https://colab.research.google.com/github/Alfisyahrina/categorical-data/blob/master/Sesi%20II%20day%201\" target=\"_parent\"><img src=\"https://colab.research.google.com/assets/colab-badge.svg\" alt=\"Open In Colab\"/></a>"
+      ]
+    },
+    {
+      "cell_type": "markdown",
+      "id": "cc540494-1d0b-42b0-bf60-01665f56a8a6",
+      "metadata": {
+        "jp-MarkdownHeadingCollapsed": true,
+        "tags": [],
+        "id": "cc540494-1d0b-42b0-bf60-01665f56a8a6"
+      },
+      "source": [
+        "# cso_port_vists_cluster_method\n",
+        "## CSO_SMB_Demo_UnBigData\n",
+        "### Test and demonstration of Process- SMB\n",
+        "#### ***S***tationary ***M***arine ***B***roadcast\n",
+        "For 7th International Conference on Big Data and Data Science for Official Statistics<br>\n",
+        "<br>\n",
+        "\n",
+        "\n",
+        "implements cso_ais_functions<br>\n",
+        "testing ais2ships functions in context of spatial filter<br>\n",
+        "Spatial filter only returns data that is within input geometry area.  We are using a generic function<br>\n",
+        "written for joining  ais to ports data. However it works just as well joing any polygon to point data.<br>\n",
+        "Adds map to vew the outcome at end of notebook. <br>\n",
+        "\n",
+        "\n",
+        "## 0_6_x Series Major refactoring of 0_5_x Series.  \n",
+        "#### Order of process will run\n",
+        "Step 1: Imports and set up.<br>\n",
+        "Step 2: Set parameters<br>\n",
+        "Step 3: Fetch AIS data<br>\n",
+        "Step 4: Spatial Processes on AIS for data reduction\n",
+        "\n",
+        "Step 5: Get list of distinct AIS MMSI to Form Test List.<br>\n",
+        "Step 6: Run process as before to Identify Stationary point using only AIS data.<br>\n",
+        "    Step 6.1: define internal function for processing stopped ship event<br>\n",
+        "    Step 6.2: define variables used for creating stopped ship events<br>\n",
+        "    Step 6.3: Create stopped ship events<br>\n",
+        "\n",
+        "\n",
+        "\n",
+        "### Plan\n",
+        "* 0_6_0 - Start point from CSO_Polygon_Clustering_POC_V0_5_4<br>\n",
+        "* 0_6_1 - getting \\_calc in the field<br>\n",
+        "* 0_6_2 - getting stopped ship working as expected<br>\n",
+        "    * 0_6_2a - getting stopped ship working and display on map<br>\n",
+        "    * 0_6_2d - writing to aws s3 bucket <br>\n",
+        "\n",
+        "\n",
+        "### CSO_H3_clustering-series\n",
+        "justin.mcgurk@cso.ie<br>\n",
+        "nele.vanderwielen@cso.ie<br>\n",
+        "<br>\n",
+        "Central Statistics Office<br>\n",
+        "Transport-AIS<br>\n",
+        "November 2022<br>\n",
+        "<br>\n",
+        "### Style notes\n",
+        "Will always prefix pandas object with pd_ to make it clear what type of<br>\n",
+        "dataframe object we are dealing with.  The default is spark so when we have<br>\n",
+        "pandas data frame be explicit.\n",
+        "spark --> dataframe_name<br>\n",
+        "pandas --> pd_dataframe_name<br>\n",
+        "#### Example\n",
+        "\n",
+        "    "
+      ]
+    },
+    {
+      "cell_type": "markdown",
+      "id": "f91d8a0b-df61-4da4-b78d-212840c32939",
+      "metadata": {
+        "id": "f91d8a0b-df61-4da4-b78d-212840c32939"
+      },
+      "source": [
+        "# Kernel\n",
+        " choose \"ais-tt\". This kernel has additional spark configuration.\n",
+        "If you would like to choose other kernel, make sure to add the configuration either\n",
+        "<br>**thru SPOT template:**\n",
+        "```\n",
+        "\"spark.sql.parquet.enableVectorizedReader\": \"false\"\n",
+        "```\n",
+        "\n",
+        "<br>**thru Jupyter Notebook:**\n",
+        "\n",
+        "```\n",
+        "spark.conf.set(\"spark.sql.parquet.enableVectorizedReader\", \"false\")\n",
+        "```"
+      ]
+    },
+    {
+      "cell_type": "code",
+      "execution_count": null,
+      "id": "4d1de8d8-a351-4a49-baef-6b191364e0f4",
+      "metadata": {
+        "id": "4d1de8d8-a351-4a49-baef-6b191364e0f4"
+      },
+      "outputs": [],
+      "source": [
+        "#\n",
+        "#spark.conf.set(\"spark.sql.parquet.enableVectorizedReader\", \"false\")\n",
+        "spark.conf.set(\"spark.sql.execution.arrow.pyspark.enabled\", \"true\")"
+      ]
+    },
+    {
+      "cell_type": "markdown",
+      "id": "a79f2e7b-ae88-45f8-bc07-46f3a185698d",
+      "metadata": {
+        "id": "a79f2e7b-ae88-45f8-bc07-46f3a185698d"
+      },
+      "source": [
+        "# Step 1 - Imports and set up"
+      ]
+    },
+    {
+      "cell_type": "code",
+      "execution_count": null,
+      "id": "e27612c3",
+      "metadata": {
+        "id": "e27612c3"
+      },
+      "outputs": [],
+      "source": [
+        "# get our required imports to allow for git import\n",
+        "import sys\n",
+        "import os\n",
+        "import sys\n",
+        "import subprocess"
+      ]
+    },
+    {
+      "cell_type": "markdown",
+      "id": "17c5c21f",
+      "metadata": {
+        "id": "17c5c21f"
+      },
+      "source": [
+        "### S3 writer requirements\n",
+        "Need these to save to S3 bucket"
+      ]
+    },
+    {
+      "cell_type": "code",
+      "execution_count": null,
+      "id": "eae07f00",
+      "metadata": {
+        "id": "eae07f00"
+      },
+      "outputs": [],
+      "source": [
+        "!pip install fsspec\n",
+        "!pip install s3fs"
+      ]
+    },
+    {
+      "cell_type": "code",
+      "execution_count": null,
+      "id": "b4a5e5dd",
+      "metadata": {
+        "id": "b4a5e5dd"
+      },
+      "outputs": [],
+      "source": [
+        "import fsspec\n",
+        "import s3fs"
+      ]
+    },
+    {
+      "cell_type": "markdown",
+      "id": "b06cbe37",
+      "metadata": {
+        "id": "b06cbe37"
+      },
+      "source": [
+        "### Define where we are going to write stuff to."
+      ]
+    },
+    {
+      "cell_type": "code",
+      "execution_count": null,
+      "id": "47df9273",
+      "metadata": {
+        "id": "47df9273"
+      },
+      "outputs": [],
+      "source": [
+        "save_path = \"s3a://ungp-ais-data-historical-backup/user_temp/\"\n",
+        "#save_path_unique = save_path + \"cso/stopped_ship_demo_20221026/\" # pre baked data for Cork, Cape Town, Cilacap, Wellington\n",
+        "save_path_unique = save_path + \"cso/stopped_ship_demo_20221109/\"\n",
+        "del save_path"
+      ]
+    },
+    {
+      "cell_type": "markdown",
+      "id": "b91e333b",
+      "metadata": {
+        "id": "b91e333b"
+      },
+      "source": [
+        "#### Now import AIS helper functions and Alias\n",
+        "## AIS package -- install using pip\n",
+        "A project-level read-only token has been generated for use of the AIS Task Team."
+      ]
+    },
+    {
+      "cell_type": "code",
+      "execution_count": null,
+      "id": "77d284c2",
+      "metadata": {
+        "id": "77d284c2"
+      },
+      "outputs": [],
+      "source": [
+        "# Import ais - developed by Cherryl Chico and AIS TT\n",
+        "\n",
+        "GITLAB_USER = \"read_aistt\"  #For use of members of AIS Task Team, read only access\n",
+        "\n",
+        "GITLAB_TOKEN = \"MMQ6ky1rnLsuKxjyZuvB\" # Expiring token\n",
+        "git_package = f\"git+https://{GITLAB_USER}:{GITLAB_TOKEN}@code.officialstatistics.org/trade-task-team-phase-1/ais.git\"\n",
+        "\n",
+        "std_out = subprocess.run([sys.executable, \"-m\", \"pip\", \"install\",git_package], capture_output=True, text=True).stdout\n",
+        "print(std_out)"
+      ]
+    },
+    {
+      "cell_type": "markdown",
+      "id": "d65782ef-5a71-4668-85e3-3acd8962b799",
+      "metadata": {
+        "id": "d65782ef-5a71-4668-85e3-3acd8962b799"
+      },
+      "source": [
+        "## CSO Packages  -- install using pip\n",
+        "A project-level read-only token has been generated for use of the AIS Task Team."
+      ]
+    },
+    {
+      "cell_type": "markdown",
+      "id": "3bbda84b-ba40-4a4a-8e93-0f96d0ce8ae3",
+      "metadata": {
+        "id": "3bbda84b-ba40-4a4a-8e93-0f96d0ce8ae3"
+      },
+      "source": [
+        "#### CSO Ireland AIS: upload-data"
+      ]
+    },
+    {
+      "cell_type": "code",
+      "execution_count": null,
+      "id": "d42ca831-ba6e-4529-8e0a-fed26d0cc95d",
+      "metadata": {
+        "id": "d42ca831-ba6e-4529-8e0a-fed26d0cc95d"
+      },
+      "outputs": [],
+      "source": [
+        "# Import CSO helpers # cso imports from git hub\n",
+        "\n",
+        "GITLAB_USER = \"CSO_UNDemo_load_read_api_20221109\"  #token name\n",
+        "GITLAB_TOKEN = \"HmgnyLUfUr4wzWFfsySD\" #personal access token - expires 9/11/2022\n",
+        "\n",
+        "git_package = f\"git+https://{GITLAB_USER}:{GITLAB_TOKEN}@code.officialstatistics.org/cso-ireland-ais/upload-data.git\"\n",
+        "    \n",
+        "print(\" Installing Packages!\") # \n",
+        "std_out = subprocess.run([sys.executable, \"-m\", \"pip\", \"install\", git_package], capture_output=True, text=True).stdout\n",
+        "print(std_out) # --- Set to True to debug pip package installation\n",
+        "print(\"Done!\")"
+      ]
+    },
+    {
+      "cell_type": "markdown",
+      "id": "3458ddf2-29c9-44bd-86bf-5e5edb3a6b6f",
+      "metadata": {
+        "id": "3458ddf2-29c9-44bd-86bf-5e5edb3a6b6f"
+      },
+      "source": [
+        "#### CSO Ireland AIS: functions"
+      ]
+    },
+    {
+      "cell_type": "code",
+      "execution_count": null,
+      "id": "556bdc3e-e305-4766-a427-7571373cfa77",
+      "metadata": {
+        "id": "556bdc3e-e305-4766-a427-7571373cfa77"
+      },
+      "outputs": [],
+      "source": [
+        "# Import CSO helpers # cso imports from git hub\n",
+        "\n",
+        "GITLAB_USER = \"CSO_Ireland_AIS_functions_read_api_20221111\"  #token name\n",
+        "GITLAB_TOKEN = \"RALuwsPpqoWMyZRw8a-u\" #personal access token - expires 11/11/2022\n",
+        "\n",
+        "git_package = f\"git+https://{GITLAB_USER}:{GITLAB_TOKEN}@code.officialstatistics.org/cso-ireland-ais/functions.git\"\n",
+        "    \n",
+        "print(\" Installing Packages!\") # \n",
+        "std_out = subprocess.run([sys.executable, \"-m\", \"pip\", \"install\", git_package], capture_output=True, text=True).stdout\n",
+        "print(std_out) # --- Set to True to debug pip package installation\n",
+        "print(\"Done!\")"
+      ]
+    },
+    {
+      "cell_type": "code",
+      "execution_count": null,
+      "id": "dfb61fd9-2891-4765-9ddd-44e4c8d28eff",
+      "metadata": {
+        "id": "dfb61fd9-2891-4765-9ddd-44e4c8d28eff"
+      },
+      "outputs": [],
+      "source": [
+        "# Clean up \n",
+        "try:\n",
+        "    del GITLAB_USER, GITLAB_TOKEN, git_package, std_out\n",
+        "except:\n",
+        "    pass"
+      ]
+    },
+    {
+      "cell_type": "markdown",
+      "id": "74640520-0e52-49cc-8ff9-cf383c6cbcad",
+      "metadata": {
+        "id": "74640520-0e52-49cc-8ff9-cf383c6cbcad"
+      },
+      "source": [
+        "### Now do imports and alias of git sourced functionality "
+      ]
+    },
+    {
+      "cell_type": "code",
+      "execution_count": null,
+      "id": "204ce3a4-6734-437b-8d41-385032b7f726",
+      "metadata": {
+        "id": "204ce3a4-6734-437b-8d41-385032b7f726"
+      },
+      "outputs": [],
+      "source": [
+        "# import ais and give it an alias - af\n",
+        "from ais import functions as af\n",
+        "#Now import cso and give it an alias - cso_load\n",
+        "from upload_data import load as cso_load\n",
+        "from cso_ais import cso_ais as cso_a\n",
+        "from cso_utility import cso_utility as cso_u\n",
+        "from cso_proximity import cso_proximity as cso_p\n"
+      ]
+    },
+    {
+      "cell_type": "markdown",
+      "id": "e9ea5642",
+      "metadata": {
+        "id": "e9ea5642"
+      },
+      "source": [
+        "## For you information \n",
+        "### See what these cso functions do and parameters.\n",
+        "Can un-comment these out and review at your leisure."
+      ]
+    },
+    {
+      "cell_type": "code",
+      "execution_count": null,
+      "id": "42149455",
+      "metadata": {
+        "id": "42149455"
+      },
+      "outputs": [],
+      "source": [
+        "#cso_load.load_CSV?\n",
+        "\n",
+        "#cso_a.cso_df_join?\n",
+        "#cso_a.cso_ais2geom?\n",
+        "#cso_a.cso_ais2areas?\n",
+        "#cso_a.cso_ais2unixtime?\n",
+        "\n",
+        "#cso_p.cso_k_ring?\n",
+        "#cso_p.cso_h3_adjacency_test?\n",
+        "#cso_p.cso_resolution_test?\n",
+        "#cso_p.cso_string_to_h3?\n",
+        "#cso_p.cso_h3_to_string?\n",
+        "#cso_p.get_h3_index?\n",
+        "#cso_p.get_h3_centroid?\n",
+        "#cso_p.get_h3_dist?\n",
+        "#cso_u.calc_list_average?\n",
+        "#cso_u.calc_list_standard_deviation?\n",
+        "#cso_u.calc_stddev_boundingbox_wkt?\n",
+        "#cso_u.calc_tri_line_wkt?\n",
+        "#cso_u.calc_point_wkt?\n",
+        "#cso_u.calc_lower_upper_time_estimates?\n",
+        "cso_u.cso_wkt_load?\n",
+        "#cso_u.cso_dataframe_stripper?"
+      ]
+    },
+    {
+      "cell_type": "markdown",
+      "id": "32bed9c2",
+      "metadata": {
+        "id": "32bed9c2"
+      },
+      "source": [
+        "### Read in data from csv files for ports and countries - UNECE ML 2022"
+      ]
+    },
+    {
+      "cell_type": "code",
+      "execution_count": null,
+      "id": "f940629d",
+      "metadata": {
+        "id": "f940629d"
+      },
+      "outputs": [],
+      "source": [
+        "gitlab_un_token='eac7ZwiseRdeLwmBsrsm' # \n",
+        "the_id = 341\n",
+        "\n",
+        "# get the port polygons\n",
+        "the_path = 'Version2_BoundingBoxes/csv_WKT/wpi_12nm_bounding_box_port.csv'\n",
+        "pd_ports = af.get_file_gitlab(token= gitlab_un_token, project_id=the_id ,file_path=the_path)\n",
+        "\n",
+        "# get the country aggregations of port polygons\n",
+        "the_path = 'Version2_BoundingBoxes/csv_WKT/wpi_country_12nm_bounding_box.csv'\n",
+        "pd_country_areas = af.get_file_gitlab(token= gitlab_un_token, project_id=the_id ,file_path=the_path)"
+      ]
+    },
+    {
+      "cell_type": "code",
+      "execution_count": null,
+      "id": "89dd061a",
+      "metadata": {
+        "id": "89dd061a"
+      },
+      "outputs": [],
+      "source": [
+        "# World port index\n",
+        "#pd_ports.head(10000)"
+      ]
+    },
+    {
+      "cell_type": "markdown",
+      "id": "ace94e77",
+      "metadata": {
+        "id": "ace94e77"
+      },
+      "source": [
+        "### Now do imports and alias of standard python libraries ."
+      ]
+    },
+    {
+      "cell_type": "code",
+      "execution_count": null,
+      "id": "dd0a849c-9cae-4b79-9a5c-b0134b749b1d",
+      "metadata": {
+        "id": "dd0a849c-9cae-4b79-9a5c-b0134b749b1d"
+      },
+      "outputs": [],
+      "source": [
+        "#Other librarys\n",
+        "import pandas as pd\n",
+        "import geopandas as gpd\n",
+        "import numpy as np\n",
+        "import requests\n",
+        "import copy\n",
+        "\n",
+        "\n",
+        "import math # Not used as yet but maybe\n",
+        "import matplotlib.pyplot as plt\n",
+        "\n",
+        "\n",
+        "from datetime import datetime\n",
+        "from functools import reduce #used at end in data data frame appending\n"
+      ]
+    },
+    {
+      "cell_type": "markdown",
+      "id": "3622a3f0-6e37-46ff-bd18-8cba4bf8f930",
+      "metadata": {
+        "id": "3622a3f0-6e37-46ff-bd18-8cba4bf8f930"
+      },
+      "source": [
+        "## Imports of boiler plate for Sedona\n",
+        "##### Not 100% sure all this is needed."
+      ]
+    },
+    {
+      "cell_type": "code",
+      "execution_count": null,
+      "id": "fcee138e-4148-433f-a538-314f2feb54f5",
+      "metadata": {
+        "id": "fcee138e-4148-433f-a538-314f2feb54f5"
+      },
+      "outputs": [],
+      "source": [
+        "# Sedona Imports\n",
+        "import sedona.sql\n",
+        "from sedona.register import SedonaRegistrator\n",
+        "from sedona.utils import SedonaKryoRegistrator, KryoSerializer\n",
+        "from sedona.core.SpatialRDD import PolygonRDD, PointRDD\n",
+        "from sedona.core.enums import FileDataSplitter"
+      ]
+    },
+    {
+      "cell_type": "markdown",
+      "id": "d265f906-df28-4c59-bf0b-f321c3b0fc17",
+      "metadata": {
+        "id": "d265f906-df28-4c59-bf0b-f321c3b0fc17"
+      },
+      "source": [
+        "### SedonaRegistrator Process\n",
+        "The optional GeoTools library is required only if you want to use CRS transformation and ShapefileReader.<br>\n",
+        "https://sedona.apache.org/tutorial/sql-python/<br>\n",
+        "enabling Sedona geometry and index serializers -->  robbed from <br>\n",
+        "https://github.com/apache/incubator-sedona/blob/master/binder/ApacheSedonaSQL.ipynb<br>\n",
+        "https://github.com/apache/incubator-sedona/blob/master/binder/ApacheSedonaCore.ipynb<br>\n",
+        "\n",
+        "removed 'org.apache.sedona:sedona-python-adapter-3.0_2.12:1.1.0-incubating,org.datasyslab:geotools-wrapper:1.1.0-25.2'<br>\n",
+        "http://sedona.incubator.apache.org/setup/maven-coordinates/<br>\n",
+        "Indicate is use for OGS is<br>\n",
+        "The optional GeoTools library is required only if you want to use CRS transformation and ShapefileReader. <br>\n",
+        "neither of which we are going to do.<br>\n",
+        "## This process will take a couple of mins\n",
+        "### Returns: true - --> Success."
+      ]
+    },
+    {
+      "cell_type": "code",
+      "execution_count": null,
+      "id": "41a6f872-3c90-451e-b5af-971b0d6cba09",
+      "metadata": {
+        "id": "41a6f872-3c90-451e-b5af-971b0d6cba09"
+      },
+      "outputs": [],
+      "source": [
+        "# Pyspark Imports\n",
+        "#import pyspark.sql.functions as psf\n",
+        "import pyspark.sql.functions as F\n",
+        "import pyspark.sql.types as pst\n",
+        "from pyspark import StorageLevel\n",
+        "from pyspark.sql import SparkSession # this is required for the following\n",
+        "\n",
+        "# https://sedona.apache.org/tutorial/sql-python/\n",
+        "# enabling Sedona geometry and indes serializers -->  robbed from \n",
+        "# https://github.com/apache/incubator-sedona/blob/master/binder/ApacheSedonaSQL.ipynb\n",
+        "# https://github.com/apache/incubator-sedona/blob/master/binder/ApacheSedonaCore.ipynb\n",
+        "\n",
+        "# removed 'org.apache.sedona:sedona-python-adapter-3.0_2.12:1.1.0-incubating,org.datasyslab:geotools-wrapper:1.1.0-25.2'\n",
+        "# http://sedona.incubator.apache.org/setup/maven-coordinates/\n",
+        "# Indicate is use for OGS is\n",
+        "# The optional GeoTools library is required only if you want to use CRS transformation and ShapefileReader. \n",
+        "# neither of which we are going to do.\n",
+        "\n",
+        "\n",
+        "'''\n",
+        "spark = SparkSession. \\\n",
+        "    builder. \\\n",
+        "    appName('thatapp'). \\\n",
+        "    config(\"spark.serializer\", KryoSerializer.getName). \\\n",
+        "    config(\"spark.kryo.registrator\", SedonaKryoRegistrator.getName). \\\n",
+        "    config('spark.jars.packages',\n",
+        "           'org.apache.sedona:sedona-python-adapter-3.0_2.12:1.1.0-incubating,org.datasyslab:geotools-wrapper:1.1.0-25.2'). \\\n",
+        "    getOrCreate()\n",
+        "'''\n",
+        "\n",
+        "spark = SparkSession. \\\n",
+        "    builder. \\\n",
+        "    appName('thatapp'). \\\n",
+        "    config(\"spark.serializer\", KryoSerializer.getName). \\\n",
+        "    config(\"spark.kryo.registrator\", SedonaKryoRegistrator.getName). \\\n",
+        "    config('spark.jars.packages'). \\\n",
+        "    getOrCreate()\n",
+        "\n",
+        "SedonaRegistrator.registerAll(spark)"
+      ]
+    },
+    {
+      "cell_type": "markdown",
+      "id": "7153bdc7-93e9-4e9b-890c-ab8835fee15a",
+      "metadata": {
+        "tags": [],
+        "id": "7153bdc7-93e9-4e9b-890c-ab8835fee15a"
+      },
+      "source": [
+        "👆👆👆👆<br>\n",
+        "True?  -- OK GOOD to GO!<br>\n",
+        "\n",
+        "# Inititilisation is completed\n",
+        "### Now Ready for Do it!"
+      ]
+    },
+    {
+      "cell_type": "markdown",
+      "id": "9a12895d",
+      "metadata": {
+        "id": "9a12895d"
+      },
+      "source": [
+        "#### Advantage of sets\n",
+        "One of the key advantages of sets is they cannot contain duplicates.<br>\n",
+        "Thus if you are doing a number of ports at once the output will not contain any duplicate records.<br>\n",
+        "Another key advantage is speed, testing membership of a set on on average O(1) and at worst O(n). [Python Time complexity](https://wiki.python.org/moin/TimeComplexity)<br>\n",
+        "If we are dealing with millions of records this becomes important!<br>\n",
+        "<br>\n",
+        "We can eaisly make a list out of it later should we so need.<br>\n",
+        "To view cut and paste values into index inspector.<br>\n",
+        "https://observablehq.com/@nrabinowitz/h3-index-inspector#"
+      ]
+    },
+    {
+      "cell_type": "markdown",
+      "id": "78eddc5d-ba4d-4ae1-b5e1-ceb05906b356",
+      "metadata": {
+        "tags": [],
+        "id": "78eddc5d-ba4d-4ae1-b5e1-ceb05906b356"
+      },
+      "source": [
+        "# Step 2: Set parameters\n",
+        "### START - Hyper-Parameters\n",
+        "**start_date** - for ais data used in prcess<br>\n",
+        "**end_date** - for ais data used in process<br>\n",
+        "\n",
+        "#### hardcoded\n",
+        "the_k_depth = 3<br>\n",
+        "the_h3  = \"H3_int_index_10\"<br>\n"
+      ]
+    },
+    {
+      "cell_type": "code",
+      "execution_count": null,
+      "id": "f2c6e2bd",
+      "metadata": {
+        "id": "f2c6e2bd"
+      },
+      "outputs": [],
+      "source": [
+        "# Getting partitions-this is for demonstration but it could be done as iteration\n",
+        "# use world port index\n",
+        "\n",
+        "wpi_idx = 54760 # Hobart Australia\n",
+        "\n",
+        "#wpi_idx = 55150 # Wellington New Zealand\n",
+        "#wpi_idx = 51220 # CILACAP Indonesia\n",
+        "#wpi_idx = 46770 # Capetown South Africa\n",
+        "#wpi_idx = 34360 # Cork Ireland"
+      ]
+    },
+    {
+      "cell_type": "code",
+      "execution_count": null,
+      "id": "b0302da0",
+      "metadata": {
+        "id": "b0302da0"
+      },
+      "outputs": [],
+      "source": [
+        "### Use our wpi_idx we have set in parameters section now."
+      ]
+    },
+    {
+      "cell_type": "code",
+      "execution_count": null,
+      "id": "1b6471b3",
+      "metadata": {
+        "id": "1b6471b3"
+      },
+      "outputs": [],
+      "source": [
+        "pd_some_port = pd_ports.loc[pd_ports['INDEX_NO'] == wpi_idx]\n",
+        "pd_some_port.head()"
+      ]
+    },
+    {
+      "cell_type": "markdown",
+      "id": "23abeed6",
+      "metadata": {
+        "id": "23abeed6"
+      },
+      "source": [
+        "### Need to get H3 indices based on point\n",
+        "#### Need this to pass into af.get_ais()\n",
+        "We are going to use lat/long to get a h3 index @ resolution 5<br>\n",
+        "We are then going to get a K-ring of depth 1 from that seed.<br>\n",
+        "This is chosen as even if the point fall very near a corner the nearest point<br>\n",
+        "not in our K-ring is going to be of order 22km away."
+      ]
+    },
+    {
+      "cell_type": "code",
+      "execution_count": null,
+      "id": "1131ff4b",
+      "metadata": {
+        "id": "1131ff4b"
+      },
+      "outputs": [],
+      "source": [
+        "set_of_indices = set()\n",
+        "\n",
+        "# we are going to iterate over our pandas data frame as this will work if you want to work with with several ports at once\n",
+        "for index, row in pd_some_port.iterrows():\n",
+        "    lat = row['LATITUDE']\n",
+        "    lng = row['LONGITUDE']\n",
+        "    # get a k ring of set of h3 indices for each record and append set_of_indices\n",
+        "    k_ring = cso_p.cso_k_ring(cso_p.get_h3_index(lat,lng,5),k=1)\n",
+        "    set_of_indices.update(k_ring)\n",
+        "    port_name =  row['PORT_NAME']\n",
+        "    \n"
+      ]
+    },
+    {
+      "cell_type": "markdown",
+      "id": "3a052ef6",
+      "metadata": {
+        "id": "3a052ef6"
+      },
+      "source": [
+        "#### If you are intrested in seeing these try\n",
+        "Index inspector to view results on a map<br>\n",
+        "Index inspector: https://observablehq.com/@nrabinowitz/h3-index-inspector?collection=@nrabinowitz/h3<br>"
+      ]
+    },
+    {
+      "cell_type": "code",
+      "execution_count": null,
+      "id": "28136dca",
+      "metadata": {
+        "id": "28136dca"
+      },
+      "outputs": [],
+      "source": [
+        "print(set_of_indices)"
+      ]
+    },
+    {
+      "cell_type": "markdown",
+      "id": "8ce64c4c",
+      "metadata": {
+        "id": "8ce64c4c"
+      },
+      "source": [
+        "### Type conversion is necessary as UNGP ecosystem uses 64bit Interger\n",
+        "convert string to list."
+      ]
+    },
+    {
+      "cell_type": "code",
+      "execution_count": null,
+      "id": "59a27c4d",
+      "metadata": {
+        "id": "59a27c4d"
+      },
+      "outputs": [],
+      "source": [
+        "# convert this to 64 bit\n",
+        "the_h3_list = []\n",
+        "\n",
+        "for element in set_of_indices:\n",
+        "    H3_int = cso_p.cso_string_to_h3(element)\n",
+        "    the_h3_list.append(H3_int)"
+      ]
+    },
+    {
+      "cell_type": "code",
+      "execution_count": null,
+      "id": "1d9b325c",
+      "metadata": {
+        "id": "1d9b325c"
+      },
+      "outputs": [],
+      "source": [
+        "the_h3_list"
+      ]
+    },
+    {
+      "cell_type": "code",
+      "execution_count": null,
+      "id": "1bc6c2cc",
+      "metadata": {
+        "id": "1bc6c2cc"
+      },
+      "outputs": [],
+      "source": [
+        "# use this for demo - keep the named used in SMBM\n",
+        "the_h3_2_list = the_h3_list"
+      ]
+    },
+    {
+      "cell_type": "code",
+      "execution_count": null,
+      "id": "9193be2b-f9fb-4f16-8c5a-012d623b43c9",
+      "metadata": {
+        "id": "9193be2b-f9fb-4f16-8c5a-012d623b43c9"
+      },
+      "outputs": [],
+      "source": [
+        "# Hyper-parameters: control depth of k-ring size and h3 Index used for observation clustering as implemented\n",
+        "# cso_k_ring and cso_h3_adjacency_test.\n",
+        "#We need to id which H3 Index data we are using and the depth of the k-ring\n",
+        "# these are definite article, hence the use of the_name\n",
+        "\n",
+        "\n",
+        "the_k_depth = 3\n",
+        "\n",
+        "#the_h3  = \"H3_int_index_8\"\n",
+        "#the_h3  = \"H3_int_index_9\"\n",
+        "the_h3  = \"H3_int_index_10\"\n",
+        "#the_h3  = \"H3_int_index_11\"\n",
+        "\n",
+        "\n",
+        "# AIS Time Duration - For demo Only Pick a few days, map convesion is very slow if you want to see on map at end\n",
+        "start_date = datetime.fromisoformat(\"2022-10-01\")\n",
+        "end_date = datetime.fromisoformat(\"2022-10-05\")"
+      ]
+    },
+    {
+      "cell_type": "markdown",
+      "id": "337f2d4f-3fe8-4ed6-893d-a26f0ad717ac",
+      "metadata": {
+        "id": "337f2d4f-3fe8-4ed6-893d-a26f0ad717ac"
+      },
+      "source": [
+        "#### Variables (Hard Coded...)"
+      ]
+    },
+    {
+      "cell_type": "code",
+      "execution_count": null,
+      "id": "60381aaf-432b-4d23-a7b7-a02bc3affdc1",
+      "metadata": {
+        "id": "60381aaf-432b-4d23-a7b7-a02bc3affdc1"
+      },
+      "outputs": [],
+      "source": [
+        "columns_ais = [\n",
+        "\"mmsi\",\n",
+        "\"imo\",\n",
+        "\"vessel_type\",\n",
+        "\"vessel_type_code\", \n",
+        "\"vessel_type_main\",\n",
+        "\"vessel_type_sub\",\n",
+        "\"length\",\n",
+        "\"width\",\n",
+        "\"latitude\",\n",
+        "\"longitude\",\n",
+        "\"draught\", \n",
+        "\"sog\", \n",
+        "\"cog\", \n",
+        "\"rot\", \n",
+        "\"heading\", \n",
+        "\"nav_status\",           \n",
+        "\"dt_pos_utc\",\n",
+        "\"dt_insert_utc\",\n",
+        "\"H3_int_index_2\",\n",
+        "\"H3_int_index_7\",\n",
+        "\"H3_int_index_8\",        \n",
+        "\"H3_int_index_9\",         \n",
+        "\"H3_int_index_10\",\n",
+        "\"H3_int_index_11\",\n",
+        "\"message_type\"\n",
+        "]\n",
+        "\n",
+        "columns_shipping = [\n",
+        "'LRIMOShipNo',\n",
+        "'MaritimeMobileServiceIdentityMMSINumber',\n",
+        "'ShiptypeLevel5',\n",
+        "'ShipName',\n",
+        "'Tonnagesystem69convention',\n",
+        "'GrossTonnage',\n",
+        "'Deadweight'\n",
+        "]\n",
+        "\n",
+        "\n",
+        "# Get some runtime data for debugging can only start once import of datetime has completed\n",
+        "startScript= datetime.now()"
+      ]
+    },
+    {
+      "cell_type": "markdown",
+      "id": "ab877d76",
+      "metadata": {
+        "id": "ab877d76"
+      },
+      "source": [
+        "#### Variables (Hard Coded...) - for output control"
+      ]
+    },
+    {
+      "cell_type": "code",
+      "execution_count": null,
+      "id": "6105cb83",
+      "metadata": {
+        "id": "6105cb83"
+      },
+      "outputs": [],
+      "source": [
+        "#(the_trigger, delta_time_lower, delta_time_upper, min_valid_records, factor=2,geom_type='box')\n",
+        "std_dev_factor = 2\n",
+        "#geom_type = 'box'\n",
+        "#geom_type = 'point'\n",
+        "geom_type = 'tri-line'\n",
+        "\n",
+        "# the_trigger, delta_time_lower, delta_time_upper, min_valid_records, std_dev_factor,geom_type)"
+      ]
+    },
+    {
+      "cell_type": "code",
+      "execution_count": null,
+      "id": "79c1014a",
+      "metadata": {
+        "id": "79c1014a"
+      },
+      "outputs": [],
+      "source": [
+        "### Now define write back name for s3 bucket and download link"
+      ]
+    },
+    {
+      "cell_type": "code",
+      "execution_count": null,
+      "id": "77bc65bc",
+      "metadata": {
+        "scrolled": true,
+        "id": "77bc65bc"
+      },
+      "outputs": [],
+      "source": [
+        "#make a string that uses hyper-paramters to create name-will use this at end for name of download csv of results\n",
+        "#output_csv = f'{the_h3}_k_{the_k_depth}_run_{startScript.strftime(\"%Y%m%d_%H%M\")}_period_{start_date.strftime(\"%Y%m%d\")}_to_{end_date.strftime(\"%Y%m%d\")}.csv'\n",
+        "output_csv = f'{port_name}_{the_h3}_k_{the_k_depth}_{geom_type}_period_{start_date.strftime(\"%Y%m%d\")}_to_{end_date.strftime(\"%Y%m%d\")}.csv'\n",
+        "output_csv = output_csv.replace(' ', '_')\n",
+        "print(f'spaces in file name replaced with under score: makes it safe for use in af.create_download_link' )\n",
+        "print(f'Output file is named: {output_csv}')\n"
+      ]
+    },
+    {
+      "cell_type": "markdown",
+      "id": "9661790f",
+      "metadata": {
+        "id": "9661790f"
+      },
+      "source": [
+        "#### Now implement this interms of s3 write....."
+      ]
+    },
+    {
+      "cell_type": "code",
+      "execution_count": null,
+      "id": "a09218d8",
+      "metadata": {
+        "id": "a09218d8"
+      },
+      "outputs": [],
+      "source": [
+        "write_path = save_path_unique + output_csv\n",
+        "print(f'Output to s3 named: {write_path}')\n",
+        "#del save_path_unique"
+      ]
+    },
+    {
+      "cell_type": "markdown",
+      "id": "2f2002a1",
+      "metadata": {
+        "id": "2f2002a1"
+      },
+      "source": [
+        "### - END - Variables Section"
+      ]
+    },
+    {
+      "cell_type": "markdown",
+      "id": "1d936c5d-fbe1-4981-bf4a-909eb4cf4fb3",
+      "metadata": {
+        "id": "1d936c5d-fbe1-4981-bf4a-909eb4cf4fb3"
+      },
+      "source": [
+        "# Step 3: Fetch AIS data\n",
+        "create data  using ais function from task team"
+      ]
+    },
+    {
+      "cell_type": "code",
+      "execution_count": null,
+      "id": "e5d041ce",
+      "metadata": {
+        "id": "e5d041ce"
+      },
+      "outputs": [],
+      "source": [
+        "#af.get_ais?"
+      ]
+    },
+    {
+      "cell_type": "code",
+      "execution_count": null,
+      "id": "c9f4ed36-2e1c-40f5-8a21-188c64e43ad5",
+      "metadata": {
+        "id": "c9f4ed36-2e1c-40f5-8a21-188c64e43ad5"
+      },
+      "outputs": [],
+      "source": [
+        "ais_data= af.get_ais(spark,\n",
+        "                start_date, \n",
+        "                end_date = end_date,\n",
+        "                h3_list = the_h3_2_list,  \n",
+        "                columns = columns_ais)"
+      ]
+    },
+    {
+      "cell_type": "code",
+      "execution_count": null,
+      "id": "8a60d070",
+      "metadata": {
+        "id": "8a60d070"
+      },
+      "outputs": [],
+      "source": [
+        "# Now need to add unix time for \n",
+        "ais_data_unix = cso_a.cso_ais2unixtime(spark,ais_data).cache()"
+      ]
+    },
+    {
+      "cell_type": "code",
+      "execution_count": null,
+      "id": "0ad12add-c803-41f0-887f-48be2834582b",
+      "metadata": {
+        "id": "0ad12add-c803-41f0-887f-48be2834582b"
+      },
+      "outputs": [],
+      "source": [
+        "# debug probably a good time to check where we are\n",
+        "ais_data_unix.printSchema()"
+      ]
+    },
+    {
+      "cell_type": "markdown",
+      "id": "5df9c0df-e91b-4f89-9ae5-9fb703c8502a",
+      "metadata": {
+        "id": "5df9c0df-e91b-4f89-9ae5-9fb703c8502a"
+      },
+      "source": [
+        "# Step 5: Get list of distinct AIS MMSI \n",
+        "####  That looks promising: good to try"
+      ]
+    },
+    {
+      "cell_type": "markdown",
+      "id": "9bbfca8e",
+      "metadata": {
+        "id": "9bbfca8e"
+      },
+      "source": [
+        "## List of distinct AIS MMSI - Massive improvement in speed\n",
+        "obtained by moving from sql pattern --> lamda function<br>\n",
+        "Basically this is black magic.<br>\n",
+        "Aim is get a list of distinct mmsi we can iterate over <br>\n",
+        "1. get distinct mmis\n",
+        "1. convert to list\n",
+        "\n",
+        "To make distinct values<br>\n",
+        "- https://stackoverflow.com/questions/38946337/fetching-distinct-values-on-a-column-using-spark-dataframe<br>\n",
+        "- https://spark.apache.org/docs/1.6.2/api/scala/index.html#org.apache.spark.sql.DataFrame<br>\n",
+        "``g = ais_data_unix.select('mmsi').distinct()``<br>\n",
+        "Now we want to convert this to a list.\n",
+        "- https://sparkbyexamples.com/pyspark/convert-pyspark-dataframe-column-to-python-list/<br>\n",
+        "\n",
+        "In the example below map() is a RDD transformation that is used to iterate the each row in a RDD and perform an<br>\n",
+        "operation or function using lambda.<br>\n",
+        "``# PySpark Column to List``<br>\n",
+        "``states1=df.rdd.map(lambda x: x[3]).collect()``<br>\n",
+        "``print(states1)``<br>\n",
+        "#### Our implementation is \n",
+        "``iterationList =ais_data_unix.select('mmsi').distinct().rdd.map(lambda x: x[0]).collect()``<br>\n",
+        "<br>\n",
+        "Our distinct list only has one column hence use of: ``map(lambda x: x[0]).collect()`` as that is index 0.<br>\n",
+        "<br>\n",
+        "This leads to a speed preformance increas of x455 from 7'37'' to under 2 seconds<br>\n",
+        "###### We will have that, thank you very much!!!!!"
+      ]
+    },
+    {
+      "cell_type": "markdown",
+      "id": "cae64749",
+      "metadata": {
+        "id": "cae64749"
+      },
+      "source": [
+        "# This is the slow bit of code takes a few mins to run\n",
+        "Any advice on speed up is welcome."
+      ]
+    },
+    {
+      "cell_type": "code",
+      "execution_count": null,
+      "id": "701798de",
+      "metadata": {
+        "scrolled": true,
+        "id": "701798de"
+      },
+      "outputs": [],
+      "source": [
+        "#Time check\n",
+        "startWorkup= datetime.now()\n",
+        "iterationList = ais_data_unix.select('mmsi').distinct().rdd.map(lambda x: x[0]).collect()\n",
+        "\n",
+        "#print(states1)\n",
+        "# Feed back to user what is scale we are dealing with?\n",
+        "print(f\"Number of mmsi  identifed in data\\nIs:{len(iterationList)}\")\n",
+        "print(f\"Process takes time\\nOf:{datetime.now()-startWorkup}\")\n",
+        "\n",
+        "try:\n",
+        "    del startWorkup\n",
+        "except:\n",
+        "    pass"
+      ]
+    },
+    {
+      "cell_type": "markdown",
+      "id": "1e0790a5",
+      "metadata": {
+        "id": "1e0790a5"
+      },
+      "source": [
+        "### For arrow optimisation we seem to need to lose geom object \n",
+        "ais_data_nogeom = ais_data_nogeom.drop(\"geom\").cache() #<br>"
+      ]
+    },
+    {
+      "cell_type": "code",
+      "execution_count": null,
+      "id": "7d497b47-36f1-45a0-87a4-aabf2becd1f2",
+      "metadata": {
+        "id": "7d497b47-36f1-45a0-87a4-aabf2becd1f2"
+      },
+      "outputs": [],
+      "source": [
+        "# debug prove we have something meaningfull here\n",
+        "iterationList[20]\n",
+        "#Row(mmsi=250004208)"
+      ]
+    },
+    {
+      "cell_type": "markdown",
+      "id": "6b828c4d-e02a-4507-ad2a-d3bed3a0f79d",
+      "metadata": {
+        "id": "6b828c4d-e02a-4507-ad2a-d3bed3a0f79d"
+      },
+      "source": [
+        "# Step 6: Run process as before to Identify Stationary Marine Broadcast\n",
+        "### We want to be able to control what gets tested\n",
+        "creating test_list value to use in the case where we are testing<br>\n",
+        "and can scale up to full run with no unforeseen side effects"
+      ]
+    },
+    {
+      "cell_type": "code",
+      "execution_count": null,
+      "id": "53c3b213-bfdb-411a-a5e7-4798b1f43eaa",
+      "metadata": {
+        "id": "53c3b213-bfdb-411a-a5e7-4798b1f43eaa"
+      },
+      "outputs": [],
+      "source": [
+        "#test data or what we are going to shove into the \n",
+        "# case: random part of list\n",
+        "#test_list = iterationList[20:40]\n",
+        "\n",
+        "# case: some specefic cases we want to look at\n",
+        "#test_list = [iterationList[10],iterationList[150],iterationList[300]]\n",
+        "\n",
+        "# case: production everything in iteration list.\n",
+        "test_list = iterationList"
+      ]
+    },
+    {
+      "cell_type": "code",
+      "execution_count": null,
+      "id": "2fee65b1-ad5c-4d81-a8cb-c28dec0c5712",
+      "metadata": {
+        "id": "2fee65b1-ad5c-4d81-a8cb-c28dec0c5712"
+      },
+      "outputs": [],
+      "source": [
+        "#ais_data_unix.printSchema()"
+      ]
+    },
+    {
+      "cell_type": "markdown",
+      "id": "98714909",
+      "metadata": {
+        "id": "98714909"
+      },
+      "source": [
+        "## Step 6.1: define internal function for processing stopped ship event\n",
+        "We are not sure if we want to fix this to a function that is callable at this stage as still under development."
+      ]
+    },
+    {
+      "cell_type": "code",
+      "execution_count": null,
+      "id": "56dfff40",
+      "metadata": {
+        "id": "56dfff40"
+      },
+      "outputs": [],
+      "source": [
+        "def _result_calculator(the_trigger, delta_time_lower, delta_time_upper, min_valid_records, factor=2,geom_type='box'):\n",
+        "    '''\n",
+        "    Intenal funtion to calculate a result from stopped ship event (the_trigger)\n",
+        "    \n",
+        "    Parameters\n",
+        "    ----------\n",
+        "    the_trigger - list: from termination of stopped ship by either escape\n",
+        "        or end of time period.\n",
+        "    delta_time_lower - float: lower time estimate of stopped ship event\n",
+        "        calculated by _lower_upper_time_estimates\n",
+        "    delta_time_upper - float: upper time estimate of stopped ship event\n",
+        "        calculated by _lower_upper_time_estimates  \n",
+        "    min_valid_records - integer: minimum size of observations wrapped up into the_trigger for which\n",
+        "        it is acceptable to use this method.  This is driven by statistical imperatives in so far as\n",
+        "        it uses standard deviations and this requires a minimum number of observations to be valid.\n",
+        "    factor - integer{default:2}: used to create bounding box.  Corresponds to the number of standard deviations\n",
+        "        used for box creation\n",
+        "    geom_type - string{default:'box'} controls types of wkt returned\n",
+        "        'box': Returns well known text (wkt) representation of bounding box based on\n",
+        "            average lat/long standard deviations of observations used\n",
+        "        'tri-line': Creates a tri-line of three points as well known text (wkt).\n",
+        "            The three points of the tri line correspond to: \n",
+        "            -trigger event, \n",
+        "            -average co-ord, \n",
+        "            -last co-ordinates in stopping event (observation prior to disarm event)\n",
+        "        'point': Creates a point as well known text (wkt).\n",
+        "            point corresponds to trigger event.\n",
+        "    \n",
+        "    \n",
+        "    Returns\n",
+        "    ----------\n",
+        "    tuple - (string, list, header_list)\n",
+        "        string contains flag as to validity of stopping event\n",
+        "        list contains data of stopping event\n",
+        "        header_list of strings for naming list down stream\n",
+        "    \n",
+        "    NOTES\n",
+        "    ----------\n",
+        "    We have expectation on schema of the trigger\n",
+        "                the_trigger.append(row[idx_h3])  #0\n",
+        "                the_trigger.append(the_mmsi) #1\n",
+        "                the_trigger.append(the_imo) #2\n",
+        "                the_trigger.append(row[idx_obs_time]) #3 trigger time\n",
+        "                the_trigger.append(row[idx_ais_length]) #4\n",
+        "                the_trigger.append(row[idx_ais_width]) #5\n",
+        "                the_trigger.append(row[idx_ais_vessel_type]) #6\n",
+        "                the_trigger.append(row[idx_ais_vessel_type_main]) #7\n",
+        "                \n",
+        "                the_trigger.append([row[idx_cluster_time]]) #-5 [list of unix times observed]\n",
+        "                the_trigger.append([row[idx_lat]]) #-4 [list of lat observations]\n",
+        "                the_trigger.append([row[idx_lng]]) #-3 [list of lng observations]\n",
+        "                \n",
+        "                the_trigger.append(state_value) #-2\n",
+        "                the_trigger.append(1) #-1  number of records observed is last              \n",
+        "                \n",
+        "    We have expectation of schema of the result\n",
+        "                h3\n",
+        "                mmsi\n",
+        "                imo\n",
+        "                ais_length\n",
+        "                ais_width\n",
+        "                ais_vessel_type\n",
+        "                ais_vessel_type_main\n",
+        "                obs_time\n",
+        "                visit_lower\n",
+        "                visit_upper\n",
+        "                unix_trigger\n",
+        "                unix_average\n",
+        "                unix_disarm\n",
+        "                standard_deviation_lat\n",
+        "                standard_deviation_lat\n",
+        "                trigger_lat\n",
+        "                trigger_lng\n",
+        "                average_lat\n",
+        "                average_lng\n",
+        "                disarm_lat\n",
+        "                disarm_lng\n",
+        "                state_start\n",
+        "                state_end\n",
+        "                record_count\n",
+        "                status\n",
+        "                wkt [box|triline|point]\n",
+        "                \n",
+        "\n",
+        "    '''\n",
+        "    result = []\n",
+        "    \n",
+        "    # define header list that will can be used to convert to data frame: save someone having to do this later.\n",
+        "    header_list = ['h3_index_int','mmsi','imo','length','width','vessel_type','vessel_type_main','obs_time',\n",
+        "        'time_lower','time_upper','unix_trigger','avg_unix','unix_disarm','sd_lat','sd_lng',\n",
+        "        'trigger_lat','trigger_lng','avg_lat','avg_lng','disarm_lat','disarm_lng',\n",
+        "        'state_initial','state_final','obs_count','is_valid','geom_wkt']\n",
+        "    \n",
+        "    \n",
+        "    try:\n",
+        "        if not (geom_type=='box' or geom_type=='tri-line' or geom_type=='point'  ):\n",
+        "            raise ValueError(\"geom_type input: only one of box|tri-line|point are acceptable values.\")\n",
+        "\n",
+        "\n",
+        "\n",
+        "        # we assume status is valid and mutate for case where it is not!\n",
+        "        #status = 'valid'\n",
+        "        \n",
+        "        # get trigger location and time\n",
+        "        trigger_lat = the_trigger[-4][0]\n",
+        "        trigger_lng = the_trigger[-3][0]\n",
+        "        unix_trigger= the_trigger[-5][0]\n",
+        "        \n",
+        "        # get average location and time\n",
+        "        avg_lat = cso_u.calc_list_average(the_trigger[-4])\n",
+        "        avg_lng = cso_u.calc_list_average(the_trigger[-3])\n",
+        "        avg_unix = math.floor(cso_u.calc_list_average(the_trigger[-5]))# always want an integer second. use floor\n",
+        "        \n",
+        "        # get disarm location and time\n",
+        "        disarm_lat = the_trigger[-4][-1]\n",
+        "        disarm_lng = the_trigger[-3][-1]  \n",
+        "        unix_disarm = the_trigger[-5][-1] \n",
+        "        \n",
+        "          \n",
+        "        #deal with valid stopping events, sufficent observations\n",
+        "        if the_trigger[-1]> min_valid_records:\n",
+        "            status = 'valid'\n",
+        "\n",
+        "            # internal helper acting on lat/lng now safe to do standard deviation caluation\n",
+        "            standard_deviation_lat = cso_u.calc_list_standard_deviation(the_trigger[-4])\n",
+        "            standard_deviation_lng = cso_u.calc_list_standard_deviation(the_trigger[-3])\n",
+        "\n",
+        "            # deal with geom and wkt value now.\n",
+        "            if geom_type == 'box':\n",
+        "                wkt = cso_u.calc_stddev_boundingbox_wkt(avg_lat,avg_lng,standard_deviation_lat,standard_deviation_lng,factor)\n",
+        "            elif geom_type == 'tri-line':\n",
+        "                wkt = cso_u.calc_tri_line_wkt(trigger_lat,trigger_lng, avg_lat, avg_lng, disarm_lat, disarm_lng)\n",
+        "            else:\n",
+        "                wkt = cso_u.calc_point_wkt(trigger_lat,trigger_lng)\n",
+        "\n",
+        "        #deal with invalid stopping events, insufficent observations\n",
+        "        else:\n",
+        "            status = 'invalid'\n",
+        "            wkt = cso_u.calc_point_wkt(trigger_lat,trigger_lng)\n",
+        "            # set all non trigger inputs to 0\n",
+        "            standard_deviation_lat = 0 \n",
+        "            standard_deviation_lng = 0\n",
+        "\n",
+        "\n",
+        "        # populate result with trigger data passed in to function \n",
+        "        result.append(the_trigger[0]) # h3\n",
+        "        result.append(the_trigger[1]) # mmsi\n",
+        "        result.append(the_trigger[2]) # imo\n",
+        "        result.append(the_trigger[4]) # ais_length\n",
+        "        result.append(the_trigger[5]) # ais_width\n",
+        "        result.append(the_trigger[6]) # ais_vessel_type\n",
+        "        result.append(the_trigger[7]) # ais_vessel_type_main\n",
+        "        result.append(the_trigger[3]) # obs_time\n",
+        "        \n",
+        "        # Now append passed in values to function\n",
+        "        result.append(delta_time_lower)\n",
+        "        result.append(delta_time_upper)        \n",
+        "        \n",
+        "        # Now append result with data derived in function\n",
+        "        result.append(unix_trigger)\n",
+        "        result.append(avg_unix)\n",
+        "        result.append(unix_disarm)\n",
+        "        result.append(standard_deviation_lat)\n",
+        "        result.append(standard_deviation_lng)\n",
+        "        result.append(trigger_lat)\n",
+        "        result.append(trigger_lng)\n",
+        "        result.append(avg_lat)\n",
+        "        result.append(avg_lng)\n",
+        "        result.append(disarm_lat)\n",
+        "        result.append(disarm_lng)\n",
+        "        result.append(the_trigger[-2][0]) # State of observation stream at start of stopping event\n",
+        "        result.append(the_trigger[-2][1]) # State of observation stream at end of stopping event\n",
+        "        result.append(the_trigger[-1]) # Number of obserations\n",
+        "        result.append(status)\n",
+        "        result.append(wkt)\n",
+        "        #debug print(len(header_list))\n",
+        "        #debug print(len(result))\n",
+        "        \n",
+        "\n",
+        "        # check if outputs are internally consistent.\n",
+        "        if (len(header_list)!=len(result)):\n",
+        "            raise ValueError(\"length of internal header list must match length of intended result\\n \\\n",
+        "                             i.e len(_result_calculator[1]) != len(_result_calculator[2])\")\n",
+        "            \n",
+        "        return status, result, header_list\n",
+        "\n",
+        "    except Exception as e:\n",
+        "        print(f'Result calculation fail...')\n",
+        "        print(f'.....')\n",
+        "        print(f'Error: \\n{e}\\n')"
+      ]
+    },
+    {
+      "cell_type": "markdown",
+      "id": "57e3c637",
+      "metadata": {
+        "id": "57e3c637"
+      },
+      "source": [
+        "## This is where we implement pandas\n",
+        "We desire to turn this into pure spark"
+      ]
+    },
+    {
+      "cell_type": "code",
+      "execution_count": null,
+      "id": "6acfda50-0fcf-4ac1-b895-08a81101908b",
+      "metadata": {
+        "id": "6acfda50-0fcf-4ac1-b895-08a81101908b"
+      },
+      "outputs": [],
+      "source": [
+        "#Time check\n",
+        "startWorkup= datetime.now()\n",
+        "\n",
+        "#transform to Pandas \n",
+        "#pandasDF = ais_data_ports.toPandas()\n",
+        "pandasDF = ais_data_unix.toPandas()\n",
+        "print(f\"spark2pandas process takes time\\nOf:{datetime.now()-startWorkup}\")\n",
+        "print(f\"Three months took about 8:min 30secs without .cache() on ais_data_unix\")\n",
+        "try:\n",
+        "    del startWorkup\n",
+        "except:\n",
+        "    pass"
+      ]
+    },
+    {
+      "cell_type": "code",
+      "execution_count": null,
+      "id": "cfc9b711-e045-4a70-bd3a-3ff7b18d2349",
+      "metadata": {
+        "id": "cfc9b711-e045-4a70-bd3a-3ff7b18d2349"
+      },
+      "outputs": [],
+      "source": [
+        "print(f'Iteration List length : {len(iterationList)}')\n",
+        "print(f'Test List length : {len(test_list)}')"
+      ]
+    },
+    {
+      "cell_type": "markdown",
+      "id": "32e6421c",
+      "metadata": {
+        "id": "32e6421c"
+      },
+      "source": [
+        "## Step 6.2: define variables used for creating stopped ship events"
+      ]
+    },
+    {
+      "cell_type": "code",
+      "execution_count": null,
+      "id": "37fa430b",
+      "metadata": {
+        "id": "37fa430b"
+      },
+      "outputs": [],
+      "source": [
+        "min_observations = 3 # Min number of observations we are willing to use for a port and a stopping event\n",
+        "the_insufficent = [] #List for adding list of insufficent observations so we can have a metric on this.\n",
+        "the_nonVisits = [] #List for adding list of non visit reporting ships.\n",
+        "the_stopped_ship = [] #List for adding list of port visits\n",
+        "\n",
+        "# tuple (the_mmsi,) # Note this is a pythonic quirk for single element tuples\n",
+        "set_ship = set() # set which will contain tuples as above.\n",
+        "\n",
+        "# to clean up: use idx_variable for data pulled from pandas\n",
+        "# always going to put h3 first and cluster time 2nd in any list\n",
+        "idx_h3 = 0 \n",
+        "idx_cluster_time = 1\n",
+        "idx_nav = 2\n",
+        "idx_obs_time = 3\n",
+        "idx_ais_length = 4\n",
+        "idx_ais_width  = 5\n",
+        "idx_ais_vessel_type = 6\n",
+        "idx_ais_vessel_type_main = 7\n",
+        "\n",
+        "idx_sog = 8\n",
+        "idx_cog = 9\n",
+        "idx_imo = 10\n",
+        "\n",
+        "idx_goss_tonnage = 11 # don't know if we are going to use this.. but if we do this will need to move\n",
+        "\n",
+        "#alway going to put lat and long as last two...\n",
+        "idx_lat = -2\n",
+        "idx_lng = -1\n",
+        "\n",
+        "'''\n",
+        "\n",
+        "# used indexes for the_reference\n",
+        "#idx_coords = -1 # style the coordinate list will aways be last in any list used.\n",
+        "idx_ref_counts= -2 #style: the number of counts will always be 2nd last in any list used\n",
+        "idx_ref_state = -3 #style: the state variable will always be 3rd last in any list used\n",
+        "\n",
+        "#lat/long lists are used for statistical calculations of average and standard deviation.\n",
+        "idx_lng_list = -4 #style: this list of longitudes in stopping event will always be 4th last in any list used\n",
+        "idx_lat_list = -5 #style: this list of latitudes in stopping event will always be 5th last in any list used\n",
+        "idx_time_list = -6 #style: this list of unix times will be used to create average time\n",
+        "\n",
+        "'''\n",
+        "# used -ve indexes for the_trigger only values\n",
+        "idx_ref_counts= -1 #style: the number of counts will always be 2nd last in any list used\n",
+        "idx_ref_state = -2 #style: the state variable will always be 3rd last in any list used\n",
+        "\n",
+        "#lat/long lists are used for statistical calculations of average and standard deviation.\n",
+        "idx_lng_list = -3 #style: this list of longitudes in stopping event will always be 4th last in any list used\n",
+        "idx_lat_list = -4 #style: this list of latitudes in stopping event will always be 5th last in any list used\n",
+        "idx_time_list = -5 #style: this list of unix times will be used to create average time and get first/lat\n"
+      ]
+    },
+    {
+      "cell_type": "markdown",
+      "id": "4f5dc7fc",
+      "metadata": {
+        "id": "4f5dc7fc"
+      },
+      "source": [
+        "## Step 6.3 Create stopped ship events"
+      ]
+    },
+    {
+      "cell_type": "code",
+      "execution_count": null,
+      "id": "12f6a996",
+      "metadata": {
+        "id": "12f6a996"
+      },
+      "outputs": [],
+      "source": [
+        "#test_list"
+      ]
+    },
+    {
+      "cell_type": "code",
+      "execution_count": null,
+      "id": "5f472de6",
+      "metadata": {
+        "id": "5f472de6"
+      },
+      "outputs": [],
+      "source": [
+        "#### Process from 02__unece_stopped_ship_xxxxx"
+      ]
+    },
+    {
+      "cell_type": "code",
+      "execution_count": null,
+      "id": "62454756",
+      "metadata": {
+        "id": "62454756"
+      },
+      "outputs": [],
+      "source": [
+        "# To allow for the possibility of sorting in reverse time set this boolean to False\n",
+        "time_sort_order = True\n",
+        "time_factor = 1 #Use in caculating time diffs, result depends on sort order\n",
+        "if not time_sort_order:\n",
+        "    time_factor = -1\n",
+        "    \n",
+        "#print(time_factor)\n"
+      ]
+    },
+    {
+      "cell_type": "markdown",
+      "id": "ff0a334a",
+      "metadata": {
+        "id": "ff0a334a"
+      },
+      "source": [
+        "# Naming convention\n",
+        "the_trigger: Observation that triggers the event for location comparison-->former name the_reference<br>\n",
+        "the_prior: Observation just prior to triggring event. for time span calculation - for estimation of upper time<br>\n",
+        "the_previous: Stack variable data from previous observation to the_current<br>\n",
+        "\\_disarm: informal name for observation prior to excape event: lit disarming of the_trigger<br>\n",
+        "Escape event: observation reached where observation is  no longer within K-Ring<br>"
+      ]
+    },
+    {
+      "cell_type": "code",
+      "execution_count": null,
+      "id": "e4d52f98-4cc1-464e-ba08-6bf9e1b9ecbe",
+      "metadata": {
+        "scrolled": true,
+        "id": "e4d52f98-4cc1-464e-ba08-6bf9e1b9ecbe"
+      },
+      "outputs": [],
+      "source": [
+        "\n",
+        "startProcess = datetime.now()\n",
+        "for x in test_list:\n",
+        "    the_mmsi = x\n",
+        "    #the_mmsi = x[0] # required for old method....\n",
+        "    the_imo = -1 # we want a number so default as zero\n",
+        "    \n",
+        "    isFirst = True\n",
+        "    isLast = False\n",
+        "    \n",
+        "    the_trigger = []\n",
+        "    the_prior = []\n",
+        "    the_previous = []\n",
+        "    \n",
+        "    # DEBUG-----------------------------------------\n",
+        "    #print(the_mmsi)\n",
+        "    #subset data frame and sort on cluster time \n",
+        "    g = pandasDF.loc[(pandasDF['mmsi']== the_mmsi) ,\n",
+        "                     [the_h3, #remimber this is a hyper-parameter value!\n",
+        "                      \"cluster_time\",\n",
+        "                      \"nav_status\",\n",
+        "                      \"dt_pos_utc\",\n",
+        "\n",
+        "                      \"length\",\n",
+        "                      \"width\",\n",
+        "                      \"vessel_type\",\n",
+        "                      \"vessel_type_main\",                      \n",
+        "                      \n",
+        "                      \"sog\",\n",
+        "                      \"cog\", \n",
+        "                      \"imo\",\n",
+        "                      \"latitude\",\n",
+        "                      \"longitude\"]].sort_values(by=['cluster_time'])\n",
+        "\n",
+        "    #get the number of observations\n",
+        "    observations = len(g.index)\n",
+        "    \n",
+        "    #check we have min number of observations: if not next....\n",
+        "    if observations <= min_observations:\n",
+        "        the_insufficent.append([f\"Insufficent obs:{len(g.index)}\",\n",
+        "                                the_mmsi                     \n",
+        "                               ])\n",
+        "        #print(f\"have failed lenght test: {the_mmsi}\")\n",
+        "        continue\n",
+        "    else:\n",
+        "        count = 0\n",
+        "\n",
+        "    # have passed length test good to proceed\n",
+        "    #print(f\"have passed lenght test:{len(g.index)}\n",
+        "    for row_index,row in g.iterrows():\n",
+        "        \n",
+        "        # Where is the observation in the stream of observations\n",
+        "        # Need to know to deal with special cases of first and last observations in stream.\n",
+        "        count = count+1\n",
+        "        if count > 1 and isFirst == True :\n",
+        "            isFirst = False\n",
+        "        if count == observations and not isLast:\n",
+        "            isLast = True\n",
+        "       \n",
+        "        # Create a state varialbe for observaion value 1,2,3\n",
+        "        # 1 special case first observation --> Ship was in port initially at start of time period\n",
+        "        # 2 normal case mid stream neither special case of first or last observaion --> Ship arrived in port during time period\n",
+        "        # 3 special case last observation --> Ship in port at end of time period\n",
+        "        state = 2\n",
+        "        if isFirst:\n",
+        "            state = 1 \n",
+        "        if isLast:\n",
+        "            state =3        \n",
+        "        \n",
+        "        #define the_current: always put co-ord pair in list at end of list...\n",
+        "        the_current = [\n",
+        "                        row[idx_h3], #0\n",
+        "                        row[idx_cluster_time],#1\n",
+        "                        row[idx_nav],#2\n",
+        "                        row[idx_obs_time], #3\n",
+        "                        row[idx_ais_length], #4\n",
+        "                        row[idx_ais_width], #5\n",
+        "                        row[idx_ais_vessel_type], #6\n",
+        "                        row[idx_ais_vessel_type_main], #7\n",
+        "                        row[idx_ais_vessel_type_main], #8\n",
+        "                        [row[idx_lat],row[idx_lng]] \n",
+        "                      ]\n",
+        "        \n",
+        "        #if row[0] == 0: math.isnan(x)\n",
+        "        if not math.isnan(row[idx_imo])  and the_imo == -1:\n",
+        "            # Cast to integer\n",
+        "            the_imo = int(row[idx_imo])\n",
+        "\n",
+        "        # deal with special case of first record\n",
+        "        if isFirst  :\n",
+        "            # deal with special case\n",
+        "            the_previous = the_current\n",
+        "            \n",
+        "        #test on speed    \n",
+        "        if row[idx_sog] == 0:\n",
+        "            if len(the_trigger)==0:\n",
+        "                # initilise the_trigger\n",
+        "                # we need to know if a ship was in port at the start and end of time period\n",
+        "                # initialise with current state, list with two values:\n",
+        "                # [state when reference started, state when reference ended]\n",
+        "                state_value = [state,state]\n",
+        "                \n",
+        "                #Populate the trigger with static data\n",
+        "                the_trigger.append(row[idx_h3])  #0\n",
+        "                the_trigger.append(the_mmsi) #1\n",
+        "                the_trigger.append(the_imo) #2\n",
+        "                the_trigger.append(row[idx_obs_time]) #3\n",
+        "                the_trigger.append(row[idx_ais_length]) #4\n",
+        "                the_trigger.append(row[idx_ais_width]) #5\n",
+        "                the_trigger.append(row[idx_ais_vessel_type]) #6\n",
+        "                the_trigger.append(row[idx_ais_vessel_type_main]) #7\n",
+        "\n",
+        "                # we store three lists in these indexes and populate with first element of list\n",
+        "                # lists for time, lat, lng for stopped ship event\n",
+        "                the_trigger.append([row[idx_cluster_time]]) #-5\n",
+        "                the_trigger.append([row[idx_lat]]) #-4\n",
+        "                the_trigger.append([row[idx_lng]]) #-3\n",
+        "                the_trigger.append(state_value) #-2\n",
+        "                the_trigger.append(1) #-1\n",
+        "\n",
+        "                #Do some other clean up actions\n",
+        "                the_prior = the_previous\n",
+        "                set_ship.add((the_mmsi,)) #adding tuple to set\n",
+        "            else:\n",
+        "                if cso_p.cso_h3_adjacency_test(the_current[idx_h3],cso_p.cso_k_ring(the_trigger[idx_h3],the_k_depth)):\n",
+        "                    the_trigger[idx_ref_counts] += 1 # update count\n",
+        "                    the_trigger[idx_ref_state][1] = state # update state_value for end with current state\n",
+        "                    \n",
+        "                    # add time, lat longs to list\n",
+        "                    the_trigger[idx_time_list].append(row[idx_cluster_time]) #-6\n",
+        "                    the_trigger[idx_lat_list].append(row[idx_lat]) #-5\n",
+        "                    the_trigger[idx_lng_list].append(row[idx_lng]) #-4\n",
+        "                    \n",
+        "                else:\n",
+        "                    # Escape event reached, no longer within K-Ring\n",
+        "                    #calculate time difference for upper and lower bounds\n",
+        "                    t = cso_u.calc_lower_upper_time_estimates(the_prior[idx_cluster_time], \n",
+        "                                                   the_trigger[-5][0], \n",
+        "                                                   the_previous[idx_cluster_time],\n",
+        "                                                   the_current[idx_cluster_time],\n",
+        "                                                   time_factor)\n",
+        "                    \n",
+        "                    delta_time_lower = t[0]\n",
+        "                    delta_time_upper = t[1]\n",
+        "                    \n",
+        "                    # now make a result\n",
+        "                    result = _result_calculator(the_trigger, delta_time_lower, delta_time_upper, \n",
+        "                                                min_observations, std_dev_factor,geom_type)\n",
+        "                    # Append--------------------------------------\n",
+        "                    the_stopped_ship.append(result)\n",
+        "                    \n",
+        "                    #now flush our stack\n",
+        "                    del result\n",
+        "                    the_trigger.clear()\n",
+        "                    the_prior.clear()\n",
+        "\n",
+        "        \n",
+        "        else:\n",
+        "            #print(\"debug-Non zero speed\")\n",
+        "            if len(the_trigger) > 0:\n",
+        "\n",
+        "                if cso_p.cso_h3_adjacency_test(the_current[idx_h3],cso_p.cso_k_ring(the_trigger[idx_h3],the_k_depth)):\n",
+        "                    #update the number of observations to the reference by 1 only if not the first\n",
+        "                    the_trigger[idx_ref_counts] += 1\n",
+        "                    # update state_value for end with current state\n",
+        "                    the_trigger[idx_ref_state][1] = state\n",
+        "                    the_trigger[idx_time_list].append(row[idx_cluster_time]) #-6\n",
+        "                    the_trigger[idx_lat_list].append(row[idx_lat]) #-5\n",
+        "                    the_trigger[idx_lng_list].append(row[idx_lng]) #-4\n",
+        "                    \n",
+        "                else:\n",
+        "                    #calulate upper and lower time bounds\n",
+        "                    #print('In second _upper_lower_time_estimates')\n",
+        "                    #print(the_trigger)\n",
+        "                    t = cso_u.calc_lower_upper_time_estimates(the_prior[idx_cluster_time], \n",
+        "                                                    the_trigger[-5][0],\n",
+        "                                                    the_previous[idx_cluster_time], \n",
+        "                                                    the_current[idx_cluster_time],\n",
+        "                                                    time_factor)\n",
+        "                    \n",
+        "                    delta_time_lower = t[0]\n",
+        "                    delta_time_upper = t[1]\n",
+        "\n",
+        "                    # now make a result\n",
+        "                    result = _result_calculator(the_trigger, delta_time_lower, delta_time_upper, \n",
+        "                                                min_observations, std_dev_factor,geom_type)\n",
+        "                    \n",
+        "                    # Append-------------------------------------\n",
+        "                    the_stopped_ship.append(result)\n",
+        "                    \n",
+        "                    #now flust our stack\n",
+        "                    del result\n",
+        "                    the_trigger.clear()\n",
+        "                    the_prior.clear()\n",
+        "\n",
+        "\n",
+        "        #put the the_current  into the_previous so we can use it in next iteration\n",
+        "        the_previous  = the_current   \n",
+        "        \n",
+        "        # deal with special case of last record case where ship is in port record and unflushed stack\n",
+        "        if isLast and len(the_trigger) > 0:\n",
+        "            the_trigger[idx_time_list].append(row[idx_cluster_time]) #-6\n",
+        "            the_trigger[idx_lat_list].append(row[idx_lat]) #-5\n",
+        "            the_trigger[idx_lng_list].append(row[idx_lng]) #-4\n",
+        "\n",
+        "            #calulate upper and lower time bounds - No escape so use the_current time twice\n",
+        "            t = cso_u.calc_lower_upper_time_estimates(the_prior[idx_cluster_time], \n",
+        "                                           the_trigger[-5][0], \n",
+        "                                           the_current[idx_cluster_time],\n",
+        "                                           the_current[idx_cluster_time], \n",
+        "                                           time_factor)\n",
+        "            delta_time_upper = t[0]\n",
+        "            delta_time_lower = t[1]\n",
+        " \n",
+        "            # now make a result\n",
+        "            result = _result_calculator(the_trigger, delta_time_lower, delta_time_upper, \n",
+        "                                        min_observations, std_dev_factor,geom_type)\n",
+        "\n",
+        "            the_stopped_ship.append(result)\n",
+        "\n",
+        "            #now flush our stack\n",
+        "            del result\n",
+        "            the_trigger.clear()\n",
+        "            the_prior.clear()\n",
+        "            the_previous.clear()\n",
+        "\n",
+        "            if((the_mmsi,)) not in set_ship:\n",
+        "                the_nonVisits.append([f\"Non visiting obs:{len(g.index)}\",\n",
+        "                                      the_mmsi])\n",
+        "\n",
+        "print(f\"Ships in domain is: MMSI's is:..{len(test_list)}\")\n",
+        "print(f\"Stopped Ships data: Lenght is:..{len(the_stopped_ship)}\")\n",
+        "print(f\"Insufficent data: Lenght is:....{len(the_insufficent)}\")\n",
+        "print(f\"Non vists data: Lenght is:......{len(the_nonVisits)}\")\n",
+        "print (the_stopped_ship[-16])\n",
+        "\n",
+        "                \n",
+        "            "
+      ]
+    },
+    {
+      "cell_type": "code",
+      "execution_count": null,
+      "id": "e010f098",
+      "metadata": {
+        "id": "e010f098"
+      },
+      "outputs": [],
+      "source": [
+        "#cso_u.calc_lower_upper_time_estimates?"
+      ]
+    },
+    {
+      "cell_type": "code",
+      "execution_count": null,
+      "id": "d2f074ce-6cff-4c98-901e-cb7092600127",
+      "metadata": {
+        "id": "d2f074ce-6cff-4c98-901e-cb7092600127"
+      },
+      "outputs": [],
+      "source": [
+        "# DEBUG-----------------------------------------\n",
+        "# port vistits schema is \n",
+        "\n",
+        "for v in the_stopped_ship:\n",
+        "    # DEBUG-----------------------------------------\n",
+        "    #print(v[2])\n",
+        "    pass\n",
+        "    "
+      ]
+    },
+    {
+      "cell_type": "code",
+      "execution_count": null,
+      "id": "21b857fa-8731-4620-8d48-38451387e2e5",
+      "metadata": {
+        "id": "21b857fa-8731-4620-8d48-38451387e2e5"
+      },
+      "outputs": [],
+      "source": [
+        "for v in the_insufficent:\n",
+        "    # DEBUG-----------------------------------------\n",
+        "    #print(v)\n",
+        "    pass\n",
+        "   "
+      ]
+    },
+    {
+      "cell_type": "code",
+      "execution_count": null,
+      "id": "4b770228-88cb-4a0a-8480-a723c2f9a2b5",
+      "metadata": {
+        "id": "4b770228-88cb-4a0a-8480-a723c2f9a2b5"
+      },
+      "outputs": [],
+      "source": [
+        "for v in the_nonVisits:\n",
+        "    #print(v)\n",
+        "    pass"
+      ]
+    },
+    {
+      "cell_type": "code",
+      "execution_count": null,
+      "id": "46ab5961",
+      "metadata": {
+        "id": "46ab5961"
+      },
+      "outputs": [],
+      "source": []
+    },
+    {
+      "cell_type": "markdown",
+      "id": "3ed7312e-6575-4eb0-85ac-c6fd2b178e28",
+      "metadata": {
+        "id": "3ed7312e-6575-4eb0-85ac-c6fd2b178e28"
+      },
+      "source": [
+        "## Have a list of stopped ships that we now need to do stuff to.\n",
+        "1. Convert stopped ships list into a data frame\n",
+        "1. Join to ships data (on IMO inner join + remainder on mmsi inner join + no join possible (unmatched mmsi join)\n",
+        "1. rebuild point object for each case\n",
+        "1. Link to ports data via spatial join."
+      ]
+    },
+    {
+      "cell_type": "markdown",
+      "id": "7f112a97-5482-4cbc-a35a-b01810bbc59a",
+      "metadata": {
+        "id": "7f112a97-5482-4cbc-a35a-b01810bbc59a"
+      },
+      "source": [
+        "### Convert list to data frame & create point."
+      ]
+    },
+    {
+      "cell_type": "code",
+      "execution_count": null,
+      "id": "7ddff445-ec6e-4a1f-96c1-b8b28c75947c",
+      "metadata": {
+        "id": "7ddff445-ec6e-4a1f-96c1-b8b28c75947c"
+      },
+      "outputs": [],
+      "source": [
+        "# quick and dirty firstly to pandas data frame\n",
+        "fieldListStoppedShip = the_stopped_ship[-1][-1]\n",
+        "print(fieldListStoppedShip)\n",
+        "new_list = []\n",
+        "for ss in the_stopped_ship:\n",
+        "\n",
+        "    new_list.append(ss[1])\n",
+        "    #print(ss[1])\n",
+        "\n",
+        "   \n",
+        "pd_stopped_ship = pd.DataFrame(new_list, columns=fieldListStoppedShip)\n",
+        "\n",
+        "df_stopped_ship = spark.createDataFrame(pd_stopped_ship )\n",
+        "del  new_list"
+      ]
+    },
+    {
+      "cell_type": "code",
+      "execution_count": null,
+      "id": "730a52e8-5bc5-4520-8e49-a0a454090607",
+      "metadata": {
+        "id": "730a52e8-5bc5-4520-8e49-a0a454090607"
+      },
+      "outputs": [],
+      "source": [
+        "#pd_stopped_ship.head()\n",
+        "df_stopped_ship.head()"
+      ]
+    },
+    {
+      "cell_type": "code",
+      "execution_count": null,
+      "id": "52eaebf0-1ea5-4ba6-a263-052549d7a8ee",
+      "metadata": {
+        "id": "52eaebf0-1ea5-4ba6-a263-052549d7a8ee"
+      },
+      "outputs": [],
+      "source": [
+        "# now use pandas to spark df\n",
+        "cso_u.cso_wkt_load?\n",
+        "v=cso_u.cso_wkt_load(spark,df_stopped_ship,wkt_field='geom_wkt', drop_wkt = False)\n",
+        "df_stopped_ship.head()"
+      ]
+    },
+    {
+      "cell_type": "markdown",
+      "id": "857f7b7f",
+      "metadata": {
+        "id": "857f7b7f"
+      },
+      "source": [
+        "# Mapping this"
+      ]
+    },
+    {
+      "cell_type": "code",
+      "execution_count": null,
+      "id": "eadbb3b8-905c-4530-9d7a-a9e98dbe5ea2",
+      "metadata": {
+        "id": "eadbb3b8-905c-4530-9d7a-a9e98dbe5ea2"
+      },
+      "outputs": [],
+      "source": [
+        "# convert spark to pandas to geopandas\n",
+        "f = v.filter(\"is_valid == 'valid'\")\n",
+        "gpd_stopped_ship = gpd.GeoDataFrame(v.filter(\"is_valid == 'valid'\").toPandas() , crs=\"EPSG:4326\", geometry='geom')\n",
+        "gpd_stopped_ship.head(2)"
+      ]
+    },
+    {
+      "cell_type": "code",
+      "execution_count": null,
+      "id": "8ab2a913-0e57-424f-b3f8-ab0dc912290d",
+      "metadata": {
+        "id": "8ab2a913-0e57-424f-b3f8-ab0dc912290d"
+      },
+      "outputs": [],
+      "source": [
+        "import folium\n",
+        "#Set coordinates for map You can choose diffrently\n",
+        "latitude = lat #53\n",
+        "longitude = lng #-6\n",
+        "m = folium.Map(location=[latitude, longitude], zoom_start=10, tiles=\"cartodbpositron\")\n",
+        "folium.GeoJson(data=gpd_stopped_ship[\"geom\"], ).add_to(m)\n",
+        "m"
+      ]
+    },
+    {
+      "cell_type": "markdown",
+      "id": "26fc2a57",
+      "metadata": {
+        "id": "26fc2a57"
+      },
+      "source": [
+        "### Ship Data"
+      ]
+    },
+    {
+      "cell_type": "code",
+      "execution_count": null,
+      "id": "2f7862ef",
+      "metadata": {
+        "id": "2f7862ef"
+      },
+      "outputs": [],
+      "source": [
+        "basepath = \"s3a://ungp-ais-data-historical-backup/register/\"\n",
+        "version_file = \"version.csv\"\n",
+        "ship_fact_data = \"ShipData.CSV\"\n",
+        "\n",
+        "data2 = basepath + ship_fact_data\n",
+        "ships = spark.read.load(data2, format=\"csv\", sep=\",\", inferSchema=\"true\", header=\"true\")"
+      ]
+    },
+    {
+      "cell_type": "code",
+      "execution_count": null,
+      "id": "7b86c40c",
+      "metadata": {
+        "id": "7b86c40c"
+      },
+      "outputs": [],
+      "source": [
+        "ship_data = cso_u.cso_dataframe_stripper(spark, ships,columns_shipping)"
+      ]
+    },
+    {
+      "cell_type": "code",
+      "execution_count": null,
+      "id": "f5498762",
+      "metadata": {
+        "id": "f5498762"
+      },
+      "outputs": [],
+      "source": [
+        "# get the Nulls on mmsi number\n",
+        "# NO IMO MATCH: Stopped ships  data only using stripper \n",
+        "no1 = cso_u.cso_dataframe_stripper(spark,cso_a.cso_df_join(spark, \n",
+        "                        df_stopped_ship, \n",
+        "                        ship_data, \n",
+        "                        \"imo\", \n",
+        "                        'LRIMOShipNo',\n",
+        "                        join_type='LEFT' ),fieldListStoppedShip)"
+      ]
+    },
+    {
+      "cell_type": "code",
+      "execution_count": null,
+      "id": "e036a2bd",
+      "metadata": {
+        "id": "e036a2bd"
+      },
+      "outputs": [],
+      "source": [
+        "imo_match =  cso_a.cso_df_join(spark, \n",
+        "                        df_stopped_ship, \n",
+        "                        ship_data, \n",
+        "                        \"imo\", \n",
+        "                        'LRIMOShipNo',\n",
+        "                        join_type='INNER' ).cache()\n",
+        "# Recycle no1 data frame as inner  on mmsi this time round\n",
+        "mmsi_match = cso_a.cso_df_join(spark, \n",
+        "                        no1, \n",
+        "                        ship_data, \n",
+        "                        \"mmsi\", \n",
+        "                        'MaritimeMobileServiceIdentityMMSINumber',\n",
+        "                        join_type='INNER' ).cache()\n",
+        "\n",
+        "# Recycle no1 data frame as unmatched on mmsi this time round\n",
+        "no_match =  cso_a.cso_df_join(spark, \n",
+        "                        no1, \n",
+        "                        ship_data, \n",
+        "                        \"mmsi\", \n",
+        "                        'MaritimeMobileServiceIdentityMMSINumber',\n",
+        "                        join_type='LEFT').cache()\n",
+        "\n",
+        "# now going to add col of data to retain how the ship data got attached to ais dat.\n",
+        "# https://stackoverflow.com/questions/44033037/adding-constant-value-column-to-spark-dataframe\n",
+        "# remember at start the line \n",
+        "# import pyspark.sql.functions as F - we ll now we use it in anger.\n",
+        "# via\n",
+        "# xx.withColumn('shipSource', sf.lit('some text'))\n",
+        "imo_match=imo_match.withColumn('shipSource', F.lit('imo match')).cache()\n",
+        "mmsi_match=mmsi_match.withColumn('shipSource', F.lit('mmsi match')).cache()\n",
+        "no_match=no_match.withColumn('shipSource', F.lit('no match on imo or mmsi')).cache()\n",
+        "\n",
+        "imo_match.printSchema()\n",
+        "mmsi_match.printSchema()\n",
+        "no_match.printSchema()"
+      ]
+    },
+    {
+      "cell_type": "markdown",
+      "id": "b19134a3",
+      "metadata": {
+        "id": "b19134a3"
+      },
+      "source": [
+        "#### Restack into single data frame\n",
+        "https://stackoverflow.com/questions/37332434/concatenate-two-pyspark-dataframes<br>\n",
+        "require everything to have the same schema."
+      ]
+    },
+    {
+      "cell_type": "code",
+      "execution_count": null,
+      "id": "46ca6c6b",
+      "metadata": {
+        "id": "46ca6c6b"
+      },
+      "outputs": [],
+      "source": [
+        "try:\n",
+        "    a2s = reduce(lambda x,y:x.union(y), [imo_match,mmsi_match,no_match])\n",
+        "    ais2ship = a2s.cache()\n",
+        "    del a2s\n",
+        "    \n",
+        "    #get list of contents of ais2ship before geom creation as we are going to want this later...\n",
+        "    ais2ship_fieldlist = ais2ship.columns\n",
+        "\n",
+        "except Exception as e:\n",
+        "    print(f'Function requires pyspark.sql.dataframe.DataFrame object as inputs\\nCheck x-Check schemas')\n",
+        "    print(f'Error: \\n{e}\\n')\n",
+        "\n",
+        "#Time check\n",
+        "startWorkup= datetime.now()\n",
+        "count_ais = ais_data.count()\n",
+        "count_ais2ship = ais2ship.count()\n",
+        "count_stopped_ship = df_stopped_ship.count()\n",
+        "\n",
+        "print(f'ais count = {count_ais}\\nais2ships count = {count_ais2ship}\\nstopped ships count = {count_stopped_ship}')\n",
+        "print(f\"Count Process takes time\\nOf:{datetime.now()-startWorkup}\")\n",
+        "try:\n",
+        "    del startWorkup\n",
+        "except:\n",
+        "    pass"
+      ]
+    },
+    {
+      "cell_type": "code",
+      "execution_count": null,
+      "id": "a7219700",
+      "metadata": {
+        "id": "a7219700"
+      },
+      "outputs": [],
+      "source": []
+    },
+    {
+      "cell_type": "code",
+      "execution_count": null,
+      "id": "bcea7ce8",
+      "metadata": {
+        "id": "bcea7ce8"
+      },
+      "outputs": [],
+      "source": [
+        "#ais2ship.head()"
+      ]
+    },
+    {
+      "cell_type": "code",
+      "execution_count": null,
+      "id": "c0b8e9b2",
+      "metadata": {
+        "id": "c0b8e9b2"
+      },
+      "outputs": [],
+      "source": [
+        "#af.create_download_link?"
+      ]
+    },
+    {
+      "cell_type": "markdown",
+      "id": "b4c922da",
+      "metadata": {
+        "id": "b4c922da"
+      },
+      "source": [
+        "### Now ready to push out data..."
+      ]
+    },
+    {
+      "cell_type": "code",
+      "execution_count": null,
+      "id": "ef6d52f4",
+      "metadata": {
+        "id": "ef6d52f4"
+      },
+      "outputs": [],
+      "source": [
+        "#df_stopped_ship.filter(\"is_valid == 'valid'\").toPandas()"
+      ]
+    },
+    {
+      "cell_type": "code",
+      "execution_count": null,
+      "id": "b3e3500d",
+      "metadata": {
+        "id": "b3e3500d"
+      },
+      "outputs": [],
+      "source": [
+        "# Only push out valid c ases\n",
+        "x = ais2ship.filter(\"is_valid == 'valid'\").toPandas()\n",
+        "x_dloadlink = x.head(1800)\n",
+        "len(x.index)"
+      ]
+    },
+    {
+      "cell_type": "code",
+      "execution_count": null,
+      "id": "f843fea3-4cd8-4631-978a-af16c6062daa",
+      "metadata": {
+        "id": "f843fea3-4cd8-4631-978a-af16c6062daa"
+      },
+      "outputs": [],
+      "source": [
+        "af.create_download_link(x_dloadlink ,title='Download CSV file', filename= output_csv)"
+      ]
+    },
+    {
+      "cell_type": "markdown",
+      "id": "80ec926f",
+      "metadata": {
+        "id": "80ec926f"
+      },
+      "source": [
+        "## Now write to S3 Bucket"
+      ]
+    },
+    {
+      "cell_type": "code",
+      "execution_count": null,
+      "id": "2e4fc955",
+      "metadata": {
+        "id": "2e4fc955"
+      },
+      "outputs": [],
+      "source": [
+        "x.to_csv(write_path, index=False)"
+      ]
+    },
+    {
+      "cell_type": "code",
+      "execution_count": null,
+      "id": "43c41a1f-4034-4b3e-82de-da561b0bbff7",
+      "metadata": {
+        "id": "43c41a1f-4034-4b3e-82de-da561b0bbff7"
+      },
+      "outputs": [],
+      "source": [
+        "# defined startScript at top of script so now use it\n",
+        "startWorkup= datetime.now()\n",
+        "checkTime = startWorkup - startScript\n",
+        "print(f\"Runtime to here is: {checkTime}\")\n",
+        "try:\n",
+        "    del startWorkup,checkTime\n",
+        "except:\n",
+        "    pass"
+      ]
+    },
+    {
+      "cell_type": "code",
+      "execution_count": null,
+      "id": "6e155b88-44e3-4f0a-84bd-ba749a652a76",
+      "metadata": {
+        "id": "6e155b88-44e3-4f0a-84bd-ba749a652a76"
+      },
+      "outputs": [],
+      "source": [
+        "#%who "
+      ]
+    },
+    {
+      "cell_type": "code",
+      "execution_count": null,
+      "id": "bec7060a-687d-4736-9d80-d58b9facd4a5",
+      "metadata": {
+        "id": "bec7060a-687d-4736-9d80-d58b9facd4a5"
+      },
+      "outputs": [],
+      "source": [
+        "spark.stop()"
+      ]
+    },
+    {
+      "cell_type": "code",
+      "execution_count": null,
+      "id": "2bf79d31-7b8d-4b0d-894a-e11d4f81526d",
+      "metadata": {
+        "id": "2bf79d31-7b8d-4b0d-894a-e11d4f81526d"
+      },
+      "outputs": [],
+      "source": [
+        "print(f'Download link name:{output_csv}')\n",
+        "print(f'S3 File name:{write_path}')\n",
+        "      "
+      ]
+    },
+    {
+      "cell_type": "code",
+      "execution_count": null,
+      "id": "5bd4d98e",
+      "metadata": {
+        "id": "5bd4d98e"
+      },
+      "outputs": [],
+      "source": []
+    }
+  ],
+  "metadata": {
+    "kernelspec": {
+      "display_name": "Config template ais-tt",
+      "language": "python3",
+      "name": "ais-tt"
+    },
+    "language_info": {
+      "codemirror_mode": {
+        "name": "ipython",
+        "version": 3
+      },
+      "file_extension": ".py",
+      "mimetype": "text/x-python",
+      "name": "python",
+      "nbconvert_exporter": "python",
+      "pygments_lexer": "ipython3",
+      "version": "3.8.8"
+    },
+    "toc-autonumbering": false,
+    "colab": {
+      "provenance": [],
+      "include_colab_link": true
+    }
+  },
+  "nbformat": 4,
+  "nbformat_minor": 5
+}
